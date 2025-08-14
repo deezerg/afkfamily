@@ -1,69 +1,58 @@
 
-import os
+import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils import executor
+import os
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
 
-TOKEN = os.getenv("TOKEN")
-ADMINS = [int(uid) for uid in os.getenv("ADMINS", "").split(",") if uid]
+logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher(bot)
+API_TOKEN = os.getenv("BOT_TOKEN")
 
-# Кнопки выбора контракта
-buttons = [
-    "Ателье III - 1000",
-    "Товар с корабля - 600",
-    "Апельсины - 24",
-    "Шампиньоны - 80",
-    "Сосна - 100",
-    "Пшеница - 250"
-]
-kb = ReplyKeyboardMarkup(resize_keyboard=True)
-for btn in buttons:
-    kb.add(KeyboardButton(btn))
+bot = Bot(token=API_TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
 
-user_data = {}
+class Form(StatesGroup):
+    static_id = State()
+    quantity = State()
+    screenshot = State()
 
-@dp.message_handler(commands=["start"])
-async def start_cmd(message: types.Message):
-    await message.answer("Выберите контракт:", reply_markup=kb)
+# Кнопки с контрактами
+contracts_keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+contracts_keyboard.add(KeyboardButton("Контракт 1"), KeyboardButton("Контракт 2"))
 
-@dp.message_handler(commands=["myid"])
-async def myid_cmd(message: types.Message):
-    await message.answer(f"Ваш user_id: {message.from_user.id}")
+@dp.message_handler(commands="start")
+async def cmd_start(message: types.Message):
+    await message.answer("Выберите контракт:", reply_markup=contracts_keyboard)
 
-@dp.message_handler(lambda msg: msg.text in buttons)
-async def contract_chosen(message: types.Message):
-    user_data[message.from_user.id] = {"contract": message.text}
+@dp.message_handler(lambda message: message.text in ["Контракт 1", "Контракт 2"])
+async def choose_contract(message: types.Message, state: FSMContext):
+    await state.update_data(contract=message.text)
+    await Form.static_id.set()
     await message.answer("Укажите ваш статический ID:")
 
-@dp.message_handler(lambda msg: message.from_user.id in user_data and "static_id" not in user_data[message.from_user.id])
-async def static_id_input(message: types.Message):
-    user_data[message.from_user.id]["static_id"] = message.text
-    await message.answer("Введите количество позиций к отгрузке:")
+@dp.message_handler(state=Form.static_id)
+async def process_static_id(message: types.Message, state: FSMContext):
+    await state.update_data(static_id=message.text)
+    await Form.next()
+    await message.answer("Укажите количество позиций:")
 
-@dp.message_handler(lambda msg: message.from_user.id in user_data and "quantity" not in user_data[message.from_user.id])
-async def quantity_input(message: types.Message):
-    user_data[message.from_user.id]["quantity"] = message.text
-    await message.answer("Пришлите скриншот для отчёта.")
+@dp.message_handler(state=Form.quantity)
+async def process_quantity(message: types.Message, state: FSMContext):
+    await state.update_data(quantity=message.text)
+    await Form.next()
+    await message.answer("Прикрепите скриншот отчета:")
 
-@dp.message_handler(content_types=["photo"])
-async def handle_photo(message: types.Message):
-    if message.from_user.id in user_data:
-        data = user_data.pop(message.from_user.id)
-        caption = (
-            f"Контракт: {data['contract']}
-"
-            f"Статический ID: {data['static_id']}
-"
-            f"Количество: {data['quantity']}"
-        )
-        for admin_id in ADMINS:
-            await bot.send_photo(admin_id, photo=message.photo[-1].file_id, caption=caption)
-        await message.answer("Отчёт отправлен администратору!")
-    else:
-        await message.answer("Сначала начните с выбора контракта.")
+@dp.message_handler(content_types=types.ContentType.PHOTO, state=Form.screenshot)
+async def process_screenshot(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    # Здесь можно сохранить скриншот или обработать его
+    await message.answer("Отчет принят!")
+    await state.finish()
 
-if __name__ == "__main__":
+if name == "__main__":
     executor.start_polling(dp, skip_updates=True)
