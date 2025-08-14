@@ -6,109 +6,119 @@ from aiogram.utils import executor
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 logging.basicConfig(level=logging.INFO)
 
-# Вставь сюда токен твоего бота
 API_TOKEN = os.getenv("BOT_TOKEN")
-# Вставь сюда свой Telegram ID для получения отчетов
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
+ADMIN_ID = int(os.getenv("ADMIN_ID"))  # Ваш Telegram ID для получения отчетов
 
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-# Состояния для FSM
-class Form(StatesGroup):
-    contract = State()
-    static_id = State()
-    quantity = State()
-    screenshot = State()
+# FSM состояния
+class ReportStates(StatesGroup):
+    CHOOSING_CONTRACT = State()
+    ENTER_ID = State()
+    ENTER_QUANTITY = State()
+    SEND_PHOTO = State()
 
-# Клавиатура с контрактами
-def contract_keyboard():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(
-        KeyboardButton("Ателье III - 1000"),
-        KeyboardButton("Товар с корабля - 600"),
-    )
-    kb.add(
-        KeyboardButton("Апельсины - 24"),
-        KeyboardButton("Шампиньоны - 80"),
-    )
-    kb.add(
-        KeyboardButton("Сосна - 100"),
-        KeyboardButton("Пшеница - 250"),
-    )
-    return kb
+# Контракты
+contracts = [
+    ("Ателье III - 1000", "contract_1"),
+    ("Товар с корабля - 600", "contract_2"),
+    ("Апельсины - 24", "contract_3"),
+    ("Шампиньоны - 80", "contract_4"),
+    ("Сосна - 100", "contract_5"),
+    ("Пшеница - 250", "contract_6")
+]
 
-# Кнопка "Вернуться назад"
-back_kb = ReplyKeyboardMarkup(resize_keyboard=True).add(KeyboardButton("Вернуться назад"))
+# Кнопка вернуться назад
+back_button = InlineKeyboardMarkup().add(InlineKeyboardButton("⬅️ Вернуться назад", callback_data="back"))
 
-# /start
-@dp.message_handler(commands="start")
-async def start(message: types.Message):
-    await Form.contract.set()
-    await message.answer("Выберите контракт:", reply_markup=contract_keyboard())
+# /start команда
+@dp.message_handler(commands=["start"])
+async def cmd_start(message: types.Message):
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    for name, callback in contracts:
+        keyboard.add(InlineKeyboardButton(text=name, callback_data=callback))
+    await message.answer("Пожалуйста, выберите контракт:", reply_markup=keyboard)
+    await ReportStates.CHOOSING_CONTRACT.set()
 
 # Выбор контракта
-@dp.message_handler(state=Form.contract)
-async def process_contract(message: types.Message, state: FSMContext):
-    if message.text == "Вернуться назад":
-        await message.answer("Вы уже на первом шаге", reply_markup=contract_keyboard())
-        return
-    await state.update_data(contract=message.text)
-    await Form.static_id.set()
-    await message.answer("Укажите ваш статический ID:", reply_markup=back_kb)
+@dp.callback_query_handler(lambda c: c.data.startswith("contract_"), state=ReportStates.CHOOSING_CONTRACT)
+async def choose_contract(call: types.CallbackQuery, state: FSMContext):
+    await state.update_data(contract=call.data)
+    await call.message.edit_reply_markup(reply_markup=None)  # убираем кнопки
+    await call.message.answer("Укажите ваш статический ID:", reply_markup=back_button)
+    await ReportStates.ENTER_ID.set()
+
+# Кнопка вернуться назад
+@dp.callback_query_handler(lambda c: c.data == "back", state="*")
+async def go_back(call: types.CallbackQuery, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state == ReportStates.ENTER_ID.state or current_state == ReportStates.ENTER_QUANTITY.state or current_state == ReportStates.SEND_PHOTO.state:
+        keyboard = InlineKeyboardMarkup(row_width=2)
+        for name, callback in contracts:
+            keyboard.add(InlineKeyboardButton(text=name, callback_data=callback))
+        await call.message.answer("Выберите контракт заново:", reply_markup=keyboard)
+        await ReportStates.CHOOSING_CONTRACT.set()
+        await state.update_data(contract=None, user_id=None, quantity=None, photo=None)
+    await call.answer()
 
 # Ввод статического ID
-@dp.message_handler(state=Form.static_id)
-async def process_static_id(message: types.Message, state: FSMContext):
-    if message.text == "Вернуться назад":
-        await Form.contract.set()
-        await message.answer("Выберите контракт:", reply_markup=contract_keyboard())
-        return
-    if not message.text.isdigit():
-        await message.answer("Введите числовой ID!")
-        return
-    await state.update_data(static_id=int(message.text))
-    await Form.quantity.set()
-    await message.answer("Введите количество позиций к отгрузке:", reply_markup=back_kb)
+@dp.message_handler(lambda message: not message.text.isdigit(), state=ReportStates.ENTER_ID)
+async def invalid_id(message: types.Message):
+    await message.reply("Пожалуйста, введите числовое значение для статического ID!")
+
+@dp.message_handler(lambda message: message.text.isdigit(), state=ReportStates.ENTER_ID)
+async def enter_id(message: types.Message, state: FSMContext):
+    await state.update_data(user_id=int(message.text))
+    await message.answer("Введите количество позиций к отгрузке:", reply_markup=back_button)
+    await ReportStates.ENTER_QUANTITY.set()
 
 # Ввод количества
-@dp.message_handler(state=Form.quantity)
-async def process_quantity(message: types.Message, state: FSMContext):
-    if message.text == "Вернуться назад":
-        await Form.static_id.set()
-        await message.answer("Укажите ваш статический ID:", reply_markup=back_kb)
-        return
-    if not message.text.isdigit():
-        await message.answer("Введите числовое значение!")
-        return
-    await state.update_data(quantity=int(message.text))
-    await Form.screenshot.set()
-    await message.answer("Пришлите скриншот для отчёта:", reply_markup=back_kb)
+@dp.message_handler(lambda message: not message.text.isdigit(), state=ReportStates.ENTER_QUANTITY)
+async def invalid_quantity(message: types.Message):
+    await message.reply("Пожалуйста, введите числовое значение для количества позиций!")
 
-# Присылка скриншота
-@dp.message_handler(content_types=types.ContentType.PHOTO, state=Form.screenshot)
-async def process_screenshot(message: types.Message, state: FSMContext):
+@dp.message_handler(lambda message: message.text.isdigit(), state=ReportStates.ENTER_QUANTITY)
+async def enter_quantity(message: types.Message, state: FSMContext):
+    await state.update_data(quantity=int(message.text))
+    await message.answer("Пришлите скриншот для отчёта:", reply_markup=back_button)
+    await ReportStates.SEND_PHOTO.set()
+
+# Получение фото
+@dp.message_handler(content_types=['photo'], state=ReportStates.SEND_PHOTO)
+
+async def receive_photo(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    # Отправка админу
-    await bot.send_message(
-        chat_id=ADMIN_ID,
-        text=f"Новый отчет:\nКонтракт: {data['contract']}\nID: {data['static_id']}\nКоличество: {data['quantity']}"
+    await state.update_data(photo=message.photo[-1].file_id)
+
+    # Отправка отчета админу
+    report_text = (
+        f"Новый отчет!\n"
+        f"Контракт: {data.get('contract')}\n"
+        f"Статический ID: {data.get('user_id')}\n"
+        f"Количество: {data.get('quantity')}"
     )
+    await bot.send_message(ADMIN_ID, report_text)
+    await bot.send_photo(ADMIN_ID, data.get("photo"))
+
     await message.answer("Отчет принят👌")
     # Возврат к первому этапу
-    await Form.contract.set()
-    await message.answer("Выберите контракт:", reply_markup=contract_keyboard())
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    for name, callback in contracts:
+        keyboard.add(InlineKeyboardButton(text=name, callback_data=callback))
+    await message.answer("Пожалуйста, выберите контракт:", reply_markup=keyboard)
+    await ReportStates.CHOOSING_CONTRACT.set()
+    await state.update_data(contract=None, user_id=None, quantity=None, photo=None)
 
-# Кнопка "Вернуться назад" при фото
-@dp.message_handler(lambda message: message.text == "Вернуться назад", state=Form.screenshot)
-async def back_from_screenshot(message: types.Message):
-    await Form.quantity.set()
-    await message.answer("Введите количество позиций к отгрузке:", reply_markup=back_kb)
+# Проверка на не фото
+@dp.message_handler(lambda message: message.content_type != 'photo', state=ReportStates.SEND_PHOTO)
+async def invalid_photo(message: types.Message):
+    await message.reply("Пожалуйста, пришлите именно фото!")
 
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
